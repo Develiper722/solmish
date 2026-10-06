@@ -20,15 +20,12 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
-      - name: Flutter packages
-        script: flutter pub get
-      - name: CocoaPods install
+      # Note: no explicit pub get / pod install steps on purpose.
+      # The flutter tool already runs both itself during the build,
+      # so listing them here would run every command twice.
+      - name: Build unsigned IPA
         script: |
-          cd ios && pod install --repo-update
-      - name: Build unsigned .app
-        script: flutter build ios --release --no-codesign
-      - name: Pack unsigned IPA
-        script: |
+          flutter build ios --release --no-codesign
           cd build/ios/iphoneos
           rm -rf Payload app-unsigned.ipa
           mkdir Payload
