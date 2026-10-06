@@ -31,9 +31,23 @@ class VideoItem {
 
 class SmolishRepo {
   static Future<String> _jina(String path) async {
-    final r = await http.get(Uri.parse('https://r.jina.ai$path'));
-    if (r.statusCode != 200) throw Exception('HTTP ${r.statusCode}');
-    return r.body;
+    Future<String> once() async {
+      final r = await http.get(Uri.parse('https://r.jina.ai$path'));
+      if (r.statusCode != 200) throw Exception('HTTP ${r.statusCode}');
+      return r.body;
+    }
+
+    try {
+      return await once().timeout(const Duration(seconds: 20));
+    } catch (e) {
+      // Reader proxy rate-limits bursts: one retry after a breather.
+      final msg = '$e';
+      if (msg.contains('429') || msg.contains('402')) {
+        await Future.delayed(const Duration(seconds: 4));
+        return await once().timeout(const Duration(seconds: 20));
+      }
+      rethrow;
+    }
   }
 
   static final _videoLink =

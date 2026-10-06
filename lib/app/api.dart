@@ -568,7 +568,96 @@ class SmolishApi {
     return [];
   }
 
-  /// Raw gate-browser session probe for the Me tab diagnostics.
+  /// Per-video counts. oEmbed is on the gate's pass-through list, so it
+  /// goes through the signed browser (direct HTTP is firewall-blocked).
+  static Future<({int likes, int comments, int views})> videoStats(
+      String id) async {
+    const fallback = (likes: 0, comments: 0, views: 0);
+    ({int likes, int comments, int views}) parse(dynamic j) {
+      final provider =
+          j is Map ? '${j['provider_name'] ?? ''}' : '';
+      final nums = RegExp(r'\d+')
+          .allMatches(provider)
+          .map((m) => int.tryParse(m.group(0)!) ?? 0)
+          .toList();
+      return (
+        comments: nums.isNotEmpty ? nums[0] : 0,
+        likes: nums.length > 1 ? nums[1] : 0,
+        views: nums.length > 2 ? nums[2] : 0,
+      );
+    }
+
+    try {
+      final g = await GateBrowser.instance.api('GET',
+          '/api/oembed?url=${Uri.encodeComponent('https://smolish.com/v/$id')}&format=json', null);
+      if (g.status == 200 && g.body.isNotEmpty) {
+        try {
+          return parse(jsonDecode(g.body));
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
+      final r = await http
+          .get(Uri.parse(
+              'https://smolish.com/api/oembed?url=${Uri.encodeComponent('https://smolish.com/v/$id')}&format=json'))
+          .timeout(const Duration(seconds: 10));
+      if (r.statusCode == 200) {
+        try {
+          return parse(jsonDecode(r.body));
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return fallback;
+  }
+
+  /// Per-video loudness (LUFS) from the page's embedded data.
+  /// Page loads ride the browser session; direct HTTP is the fallback.
+  /// Persistently cached (one lookup per video, ever).
+  static Future<double?> videoLoudness(String id) async {
+    double? parse(String html) {
+      final m =
+          RegExp(r'"loudnessLufs":(null|-?[\d.]+)').firstMatch(html);
+      if (m == null || m.group(1) == 'null') return null;
+      return double.tryParse(m.group(1)!);
+    }
+
+    Future<void> cache(double lufs) async {
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setDouble('solmish_lufs_$id', lufs);
+      } catch (_) {}
+    }
+
+    try {
+      final p = await SharedPreferences.getInstance();
+      final cached = p.getDouble('solmish_lufs_$id');
+      if (cached != null) return cached;
+    } catch (_) {}
+    try {
+      final g = await GateBrowser.instance
+          .api('GET', '/v/$id', null)
+          .timeout(const Duration(seconds: 15));
+      if (g.status == 200 && g.body.isNotEmpty) {
+        final lufs = parse(g.body);
+        if (lufs != null) {
+          await cache(lufs);
+          return lufs;
+        }
+      }
+    } catch (_) {}
+    try {
+      final r = await http
+          .get(Uri.parse('https://smolish.com/v/$id'),
+              headers: authService.headers())
+          .timeout(const Duration(seconds: 12));
+      if (r.statusCode == 200) {
+        final lufs = parse(r.body);
+        if (lufs != null) await cache(lufs);
+        return lufs;
+      }
+    } catch (_) {}
+    return null;
+  }
   static Future<GateResult> testGateSession() =>
       GateBrowser.instance.api('GET', '/api/auth/get-session', null);
 

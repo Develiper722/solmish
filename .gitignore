@@ -43,3 +43,29 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Never share signing keys or passwords
+android/key.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.asc
+*.key
+
+# Local build outputs
+/build/
+android/.gradle/
+android/app/build/
+android/build/
+ios/Pods/
+ios/.symlinks/
+macos/Flutter/ephemeral/
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+
+# Secrets / local config
+*.env
+local.properties
+google-services.json
+GoogleService-Info.plist

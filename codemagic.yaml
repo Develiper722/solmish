@@ -1,0 +1,38 @@
+# Solmish iOS cloud build (Codemagic).
+# Builds an UNSIGNED release IPA you install with Sideloadly/AltStore
+# using a free Apple ID. No paid Apple Developer account needed.
+#
+# Steps:
+#   1. Push G:\solmish to a GitHub repo.
+#   2. codemagic.io -> Add app -> pick the repo -> choose this yaml.
+#   3. Start build -> download app-unsigned.ipa from artifacts.
+#   4. Sideloadly (Windows) -> drag the IPA in, enter Apple ID, install.
+#      Re-sign weekly (free Apple ID limit), or move to TestFlight later
+#      with a paid Apple Developer account.
+
+workflows:
+  ios-unsigned:
+    name: Solmish iOS (unsigned IPA)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+      - name: CocoaPods install
+        script: |
+          cd ios && pod install --repo-update
+      - name: Build unsigned .app
+        script: flutter build ios --release --no-codesign
+      - name: Pack unsigned IPA
+        script: |
+          cd build/ios/iphoneos
+          rm -rf Payload app-unsigned.ipa
+          mkdir Payload
+          cp -r Runner.app Payload/
+          zip -qry app-unsigned.ipa Payload
+    artifacts:
+      - build/ios/iphoneos/app-unsigned.ipa

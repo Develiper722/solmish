@@ -74,54 +74,66 @@ class _ShellPageState extends State<ShellPage> {
     _refresh();
   }
 
+  static String _shortErr(Object e) {
+    final s = '$e'.replaceAll(RegExp(r'\s+'), ' ');
+    return s.length > 140 ? s.substring(0, 140) : s;
+  }
+
   Future<void> _refresh() async {
     setState(() {
       _loading = true;
       _error = null;
     });
-    // Primary: the real feed through the in-app browser - personalized
-    // when logged in, cursor-paginated. Fallback: public index.
-    try {
-      final page = await SmolishApi.feed();
-      if (!mounted) return;
-      if (page.videos.isEmpty) throw Exception('Empty feed.');
+    // Race: real feed through the in-app browser (personalized when
+    // logged in) against the public index. Whichever valid result lands
+    // first wins; the browser gets 12s before we stop waiting for it.
+    // Failures are kept so the error screen says something useful.
+    String gateErr = 'not tried';
+    String pubErr = 'not tried';
+    final gateFuture = SmolishApi.feed()
+        .timeout(const Duration(seconds: 12))
+        .then<({List<VideoItem> videos, String? cursor})?>(
+            (p) => p.videos.isEmpty ? null : p)
+        .catchError((e) {
+      gateErr = _shortErr(e);
+      return null;
+    });
+    final publicFuture = SmolishRepo.freshFeed()
+        .then<List<VideoItem>?>((items) => items.isEmpty ? null : items)
+        .catchError((e) {
+      pubErr = _shortErr(e);
+      return null;
+    });
+    final gatePage = await gateFuture;
+    if (!mounted) return;
+    if (gatePage != null) {
       setState(() {
-        _videos = page.videos;
-        _cursor = page.cursor;
+        _videos = gatePage.videos;
+        _cursor = gatePage.cursor;
         _browserFeed = true;
         _feedGen++;
         _loading = false;
         _error = null;
       });
       return;
-    } catch (_) {
-      // fall through to public index
     }
-    try {
-      final items = await SmolishRepo.freshFeed();
-      if (!mounted) return;
-      if (items.isEmpty) {
-        setState(() {
-          _loading = false;
-          _error = 'Empty feed.';
-        });
-        return;
-      }
-      setState(() {
-        _videos = items;
-        _cursor = null;
-        _browserFeed = false;
-        _feedGen++;
-        _loading = false;
-        _error = null;
-      });
-    } catch (e) {
-      if (!mounted) return;
+    final items = await publicFuture;
+    if (!mounted) return;
+    if (items == null || items.isEmpty) {
       setState(() {
         _loading = false;
-        _error = '$e';
+        _error = 'Browser feed: $gateErr\nPublic feed: $pubErr';
       });
+      return;
     }
+    setState(() {
+      _videos = items;
+      _cursor = null;
+      _browserFeed = false;
+      _feedGen++;
+      _loading = false;
+      _error = null;
+    });
   }
 
   Future<void> _loadMore() async {
@@ -286,7 +298,7 @@ class _VideoCardState extends State<VideoCard> {
       _applyVolume();
     });
     // Real counts: the public feed carries none, so fetch per video.
-    SmolishRepo.videoStats(widget.item.id).then((s) {
+    SmolishApi.videoStats(widget.item.id).then((s) {
       if (!mounted) return;
       setState(() {
         _likeCount = s.likes + (_liked ? 1 : 0);
@@ -337,8 +349,7 @@ class _VideoCardState extends State<VideoCard> {
     _lufsTried = true;
     try {
       if (!await SolSettings.normalize()) return;
-      final lufs = await SmolishRepo.videoLoudness(
-          widget.item.id, () => authService.headers());
+      final lufs = await SmolishApi.videoLoudness(widget.item.id);
       if (!mounted || lufs == null) return;
       final gain =
           pow(10.0, (_targetLufs - lufs) / 20.0).toDouble().clamp(0.15, 1.0);
@@ -551,7 +562,7 @@ class _VideoCardState extends State<VideoCard> {
     ).then((_) {
       // Refresh counts after the sheet closes (user may have posted).
       SmolishRepo.dropStats(widget.item.id);
-      SmolishRepo.videoStats(widget.item.id).then((s) {
+      SmolishApi.videoStats(widget.item.id).then((s) {
         if (!mounted) return;
         setState(() {
           _likeCount = s.likes + (_liked ? 1 : 0);
@@ -819,9 +830,10 @@ class _CommentsSheetState extends State<CommentsSheet> {
       .trim();
 
   void _viewImage(String url, {String slug = ''}) async {
-    var isFav = slug.isNotEmpty ? await GifFavs.contains(slug) : false;
+    final isFav = slug.isNotEmpty ? await GifFavs.contains(slug) : false;
     if (!mounted) return;
-    final use = await showDialog<bool>(
+    var fav = isFav;
+    showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setD) => Dialog(
@@ -849,15 +861,15 @@ class _CommentsSheetState extends State<CommentsSheet> {
                       final messenger = ScaffoldMessenger.of(context);
                       final nowFav = await GifFavs.toggle(
                           GifFav(slug: slug, url: url));
-                      setD(() => isFav = nowFav);
+                      setD(() => fav = nowFav);
                       messenger.showSnackBar(SnackBar(
                           content: Text(nowFav
                               ? 'Saved to GIF favorites.'
                               : 'Removed from GIF favorites.')));
                     },
                     icon: Icon(
-                      isFav ? Icons.favorite : Icons.favorite_border,
-                      color: isFav ? Colors.pink : Colors.white,
+                      fav ? Icons.favorite : Icons.favorite_border,
+                      color: fav ? Colors.pink : Colors.white,
                     ),
                   ),
                 ),
@@ -865,26 +877,15 @@ class _CommentsSheetState extends State<CommentsSheet> {
                 top: 4,
                 right: 4,
                 child: IconButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
+                  onPressed: () => Navigator.of(ctx).pop(),
                   icon: const Icon(Icons.close, color: Colors.white),
                 ),
               ),
-              if (slug.isNotEmpty)
-                Positioned(
-                  left: 12,
-                  right: 12,
-                  bottom: 12,
-                  child: FilledButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: const Text('Use this GIF'),
-                  ),
-                ),
             ],
           ),
         ),
       ),
     );
-    if (use == true && mounted) _sendWithGif(slug);
   }
 
   Future<void> _pickGif() async {

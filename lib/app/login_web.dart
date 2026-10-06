@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'auth.dart';
 
@@ -21,6 +22,8 @@ class _LoginWebScreenState extends State<LoginWebScreen> {
   bool _done = false;
   bool _checking = false;
   double _progress = 0;
+  bool _challenge = false;
+  String? _loadError;
 
   static final _site = WebUri('https://smolish.com/');
 
@@ -91,6 +94,11 @@ class _LoginWebScreenState extends State<LoginWebScreen> {
       appBar: AppBar(
         title: const Text('Log in with Smolish'),
         actions: [
+          IconButton(
+            tooltip: 'Reload page',
+            onPressed: () => _web?.reload(),
+            icon: const Icon(Icons.refresh),
+          ),
           TextButton(
             onPressed: _importNow,
             child: _checking
@@ -130,8 +138,73 @@ class _LoginWebScreenState extends State<LoginWebScreen> {
               onWebViewCreated: (c) => _web = c,
               onProgressChanged: (_, p) =>
                   setState(() => _progress = p / 100),
+              onReceivedError: (_, request, error) {
+                // Subresources (ads, trackers, iframes) fail all the time;
+                // only the main page failing matters.
+                if (request.isForMainFrame != true) return;
+                if (mounted) {
+                  setState(() => _loadError =
+                      'Page failed: ${error.type} ${error.description}'.trim());
+                }
+              },
+              onReceivedHttpError: (_, request, response) {
+                if (request.isForMainFrame != true) return;
+                if (mounted) {
+                  setState(() => _loadError =
+                      'Page returned HTTP ${response.statusCode}.');
+                }
+              },
+              onLoadStop: (_, __) async {
+                if (mounted && _loadError != null) {
+                  setState(() => _loadError = null);
+                }
+                // Cloudflare sometimes parks the embedded browser on a
+                // "checking" page. Flag it so the user knows to wait or
+                // use the system browser instead.
+                try {
+                  final title = await _web?.evaluateJavascript(
+                      source: 'document.title');
+                  final t = '$title'.toLowerCase();
+                  final hit = t.contains('just a moment') ||
+                      t.contains('checking') ||
+                      t.contains('challenge') ||
+                      t.contains('attention required');
+                  if (mounted && hit != _challenge) {
+                    setState(() => _challenge = hit);
+                  }
+                } catch (_) {}
+              },
             ),
           ),
+          if (_loadError != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              child: Text(
+                _loadError!,
+                style: const TextStyle(color: Colors.red),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          if (_challenge)
+            Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Smolish is checking this browser. Wait a moment, or log in below instead.',
+                    style: TextStyle(color: Colors.orange),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                  OutlinedButton(
+                    onPressed: () => launchUrl(_site.uriValue,
+                        mode: LaunchMode.externalApplication),
+                    child: const Text('Open in system browser'),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
